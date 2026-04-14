@@ -1,0 +1,60 @@
+version: "3.9"
+
+# ── ChessMate AI – Local Development Stack ───────────────────────────────
+# engine  → :8001   Stockfish UCI + coaching templates
+# vision  → :8002   8-stage CV pipeline (board detection → FEN)
+# session → :8003   Session state (currentFen / lastKnownGoodFen / etc.)
+
+services:
+
+  engine:
+    build:
+      context: ../services/engine
+    ports:
+      - "8001:8001"
+    environment:
+      STOCKFISH_PATH:   /usr/games/stockfish
+      DEFAULT_DEPTH:    15
+      DEFAULT_MULTI_PV: 3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  vision:
+    build:
+      context: ../services/vision
+    ports:
+      - "8002:8002"
+    environment:
+      CONFIDENCE_THRESHOLD: 0.65
+      MIN_BOARD_AREA_RATIO: 0.10
+      INPUT_MODE:           webcam
+      DEBUG_SAVE_FRAMES:    "false"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  session:
+    build:
+      context: ../services/session
+    ports:
+      - "8003:8003"
+    environment:
+      CONFIDENCE_THRESHOLD: 0.65
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Placeholders — uncomment as built
+  # coach:   { build: { context: ../services/coach },   ports: ["8004:8004"] }
+  # voice:   { build: { context: ../services/voice },   ports: ["8005:8005"] }
+  # gateway: { build: { context: ../services/gateway }, ports: ["8000:8000"] }

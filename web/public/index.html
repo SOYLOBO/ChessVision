@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChessVision — Live Board Detection</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0C0C0E;
+  --bg-2: #161618;
+  --bg-3: #1E1E22;
+  --surface: rgba(255,255,255,0.04);
+  --border: rgba(255,255,255,0.08);
+  --text: #E8E6E3;
+  --text-2: rgba(255,255,255,0.55);
+  --text-3: rgba(255,255,255,0.30);
+  --green: #6EE08A;
+  --green-dim: rgba(110,224,138,0.12);
+  --amber: #E0B86E;
+  --amber-dim: rgba(224,184,110,0.12);
+  --red: #E06E6E;
+  --red-dim: rgba(224,110,110,0.12);
+  --blue: #6EB4E0;
+  --r: 12px;
+  --font: 'DM Sans', -apple-system, sans-serif;
+  --mono: 'DM Mono', 'SF Mono', monospace;
+}
+
+html { height: 100%; }
+body {
+  font-family: var(--font); background: var(--bg); color: var(--text);
+  line-height: 1.5; -webkit-font-smoothing: antialiased;
+  min-height: 100vh; display: flex; flex-direction: column;
+}
+
+/* ─── Layout ───────────────────────────────────────────────────────────── */
+.app-header {
+  padding: 16px 24px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.app-title {
+  font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 10px;
+}
+.app-title .mark {
+  width: 28px; height: 28px; background: var(--green); border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; color: var(--bg);
+}
+.header-status {
+  font-size: 12px; font-weight: 500; display: flex; align-items: center; gap: 6px;
+}
+
+.app-body {
+  flex: 1; display: grid;
+  grid-template-columns: 1fr 340px;
+  grid-template-rows: 1fr auto;
+  gap: 0; overflow: hidden;
+}
+
+/* ─── Video Panel (left) ───────────────────────────────────────────────── */
+.video-panel {
+  position: relative; background: #000; display: flex;
+  align-items: center; justify-content: center;
+  border-right: 1px solid var(--border);
+  grid-row: 1 / 3;
+}
+.video-panel video {
+  width: 100%; height: 100%; object-fit: contain;
+}
+.video-panel canvas { display: none; }
+
+.video-empty {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 16px; color: var(--text-3);
+  text-align: center; padding: 40px;
+}
+.video-empty .icon { font-size: 48px; opacity: 0.4; }
+.video-empty p { font-size: 14px; font-weight: 300; max-width: 260px; }
+
+/* Video HUD overlay */
+.v-hud {
+  position: absolute; top: 12px; left: 12px;
+  display: flex; gap: 8px; z-index: 5;
+}
+.v-hud-pill {
+  font-size: 11px; font-weight: 500; padding: 5px 10px; border-radius: 100px;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  background: rgba(0,0,0,0.6); color: rgba(255,255,255,0.8);
+  display: flex; align-items: center; gap: 5px;
+}
+.dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.dot-green { background: var(--green); }
+.dot-amber { background: var(--amber); }
+.dot-red { background: var(--red); }
+.dot-off { background: rgba(255,255,255,0.2); }
+
+/* ─── Sidebar ──────────────────────────────────────────────────────────── */
+.sidebar {
+  display: flex; flex-direction: column; overflow-y: auto;
+  grid-row: 1 / 3;
+}
+.sb-section {
+  padding: 20px; border-bottom: 1px solid var(--border);
+}
+.sb-title {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-3); margin-bottom: 12px;
+}
+
+/* Source selector */
+.source-tabs {
+  display: flex; gap: 4px; background: var(--bg-2); border-radius: 8px; padding: 3px;
+}
+.source-tab {
+  flex: 1; font-family: var(--font); font-size: 12px; font-weight: 500;
+  padding: 7px 4px; border-radius: 6px; border: none;
+  background: transparent; color: var(--text-2); cursor: pointer;
+  transition: background 0.15s, color 0.15s; text-align: center;
+}
+.source-tab:hover { background: var(--bg-3); color: var(--text); }
+.source-tab.active { background: var(--green); color: var(--bg); font-weight: 600; }
+
+/* Room code input */
+.room-code-section { margin-top: 14px; }
+.room-code-section.hidden { display: none; }
+.room-code-label {
+  font-size: 11px; font-weight: 500; color: var(--text-2); margin-bottom: 6px;
+}
+.room-code-row { display: flex; gap: 8px; }
+.room-code-input {
+  flex: 1; font-family: var(--mono); font-size: 18px; font-weight: 500;
+  letter-spacing: 4px; text-transform: uppercase; text-align: center;
+  padding: 10px 12px; border-radius: 8px;
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--text);
+  outline: none; transition: border-color 0.2s;
+}
+.room-code-input:focus { border-color: var(--green); }
+.room-code-input::placeholder {
+  letter-spacing: 1px; font-size: 13px; color: var(--text-3);
+}
+
+/* Webcam device select */
+.webcam-select-section { margin-top: 10px; }
+.webcam-select-section.hidden { display: none; }
+
+/* Fields */
+.field { margin-top: 10px; }
+.field label {
+  display: block; font-size: 11px; font-weight: 500;
+  color: var(--text-3); margin-bottom: 4px;
+}
+.field input, .field select {
+  width: 100%; font-family: var(--font); font-size: 13px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; color: var(--text);
+  outline: none; transition: border-color 0.2s;
+}
+.field input:focus, .field select:focus { border-color: var(--green); }
+
+/* Buttons */
+.btn-connect {
+  width: 100%; margin-top: 14px; font-family: var(--font);
+  font-size: 14px; font-weight: 600; padding: 12px;
+  border-radius: 10px; border: none; cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn-connect:active { transform: scale(0.98); }
+.btn-connect.start { background: var(--green); color: var(--bg); }
+.btn-connect.start:hover { background: #5DCC78; }
+.btn-connect.stop { background: var(--red); color: #fff; }
+.btn-connect.stop:hover { background: #CC5D5D; }
+.btn-connect:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+/* Pipeline status */
+.ps-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.ps-item {
+  background: var(--bg-2); border-radius: 8px; padding: 10px 12px;
+}
+.ps-label {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-3); margin-bottom: 2px;
+}
+.ps-value {
+  font-family: var(--mono); font-size: 13px; color: var(--text);
+}
+.ps-value.good { color: var(--green); }
+.ps-value.warn { color: var(--amber); }
+.ps-value.bad { color: var(--red); }
+
+/* Coach output */
+.coach-box {
+  background: var(--bg-2); border-radius: var(--r); padding: 14px;
+  min-height: 60px;
+}
+.coach-move {
+  font-family: var(--mono); font-size: 22px; font-weight: 500;
+  color: var(--green); margin-bottom: 2px;
+}
+.coach-eval { font-size: 11px; color: var(--text-3); margin-bottom: 8px; }
+.coach-text { font-size: 13px; font-weight: 300; color: var(--text-2); line-height: 1.5; }
+.coach-speak {
+  font-size: 11px; font-style: italic; color: var(--text-3); margin-top: 6px;
+}
+.coach-empty { font-size: 12px; color: var(--text-3); font-weight: 300; }
+
+/* Session config */
+.config-row { display: flex; gap: 8px; }
+.config-row .field { flex: 1; }
+
+/* Log */
+.log-box {
+  background: var(--bg-2); border-radius: 8px; padding: 10px;
+  max-height: 160px; overflow-y: auto;
+  font-family: var(--mono); font-size: 10px; line-height: 1.7;
+  color: var(--text-3);
+}
+.log-box .ok { color: var(--green); }
+.log-box .warn { color: var(--amber); }
+.log-box .err { color: var(--red); }
+.log-box .info { color: var(--blue); }
+
+/* Hosts */
+.hosts-section .field { margin-top: 6px; }
+.hosts-section .field:first-child { margin-top: 0; }
+
+/* Fallback badge */
+.fallback-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 9px; font-weight: 600; text-transform: uppercase;
+  color: var(--amber); background: var(--amber-dim);
+  border-radius: 100px; padding: 2px 8px;
+}
+
+/* ─── Responsive ───────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .app-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: 300px 1fr;
+  }
+  .video-panel { border-right: none; border-bottom: 1px solid var(--border); grid-row: auto; }
+  .sidebar { grid-row: auto; }
+}
+</style>
+</head>
+<body>
+
+<!-- ─── Header ──────────────────────────────────────────────────────────── -->
+<header class="app-header">
+  <div class="app-title">
+    <div class="mark">&#9814;</div>
+    ChessVision
+  </div>
+  <div class="header-status" id="headerStatus">
+    <span class="dot dot-off" id="headerDot"></span>
+    <span id="headerStatusText">Disconnected</span>
+  </div>
+</header>
+
+<!-- ─── Body ────────────────────────────────────────────────────────────── -->
+<div class="app-body">
+
+  <!-- Video panel -->
+  <div class="video-panel" id="videoPanel">
+    <video id="videoEl" autoplay playsinline muted></video>
+    <canvas id="frameCanvas"></canvas>
+    <div class="video-empty" id="videoEmpty">
+      <div class="icon">&#128247;</div>
+      <p>Select a video source and connect to start live board detection</p>
+    </div>
+    <div class="v-hud" id="vHud" style="display:none">
+      <div class="v-hud-pill">
+        <span class="dot dot-off" id="hudDot"></span>
+        <span id="hudLabel">Idle</span>
+      </div>
+      <div class="v-hud-pill" id="hudFps">-- fps</div>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+
+    <!-- Source selection -->
+    <div class="sb-section">
+      <div class="sb-title">Video Source</div>
+      <div class="source-tabs">
+        <button class="source-tab active" data-src="webcam" onclick="selectSrc('webcam',this)">Webcam</button>
+        <button class="source-tab" data-src="phone" onclick="selectSrc('phone',this)">Phone</button>
+        <button class="source-tab" data-src="meta_glasses" onclick="selectSrc('meta_glasses',this)">Glasses</button>
+      </div>
+
+      <!-- Room code (shown for phone / glasses) -->
+      <div class="room-code-section hidden" id="roomCodeSection">
+        <div class="room-code-label">Enter room code from device</div>
+        <div class="room-code-row">
+          <input class="room-code-input" id="roomCodeInput" maxlength="6" placeholder="ABC123" autocomplete="off" spellcheck="false">
+        </div>
+        <div style="font-size:10px;color:var(--text-3);margin-top:6px">
+          Room codes are generated by the iOS/glasses app. Start a stream on the device, then enter the 6-character code shown.
+        </div>
+      </div>
+
+      <!-- Webcam device (shown for webcam) -->
+      <div class="webcam-select-section" id="webcamSection">
+        <div class="field">
+          <label>Camera device</label>
+          <select id="webcamSelect"><option value="">Default camera</option></select>
+        </div>
+      </div>
+
+      <!-- Connect -->
+      <button class="btn-connect start" id="connectBtn" onclick="startPipeline()">Connect</button>
+      <button class="btn-connect stop" id="disconnectBtn" onclick="stopPipeline()" style="display:none">Disconnect</button>
+    </div>
+
+    <!-- Session config -->
+    <div class="sb-section">
+      <div class="sb-title">Session</div>
+      <div class="config-row">
+        <div class="field">
+          <label>Mode</label>
+          <select id="cfgMode">
+            <option value="casual">Casual</option>
+            <option value="study">Study</option>
+            <option value="puzzle">Puzzle</option>
+            <option value="blunder_check">Blunder check</option>
+            <option value="opening">Opening</option>
+          </select>
+        </div>
+        <div class="field" style="flex:0 0 80px">
+          <label>Skill</label>
+          <input id="cfgSkill" type="number" min="0" max="20" value="20">
+        </div>
+      </div>
+      <div class="field">
+        <label>Sample interval (ms)</label>
+        <input id="cfgInterval" type="number" min="200" max="5000" step="100" value="800">
+      </div>
+    </div>
+
+    <!-- Pipeline status -->
+    <div class="sb-section">
+      <div class="sb-title">Pipeline</div>
+      <div class="ps-grid">
+        <div class="ps-item"><div class="ps-label">Board</div><div class="ps-value" id="psBoard">--</div></div>
+        <div class="ps-item"><div class="ps-label">Stage</div><div class="ps-value" id="psStage">--</div></div>
+        <div class="ps-item"><div class="ps-label">Confidence</div><div class="ps-value" id="psConf">--</div></div>
+        <div class="ps-item"><div class="ps-label">Latency</div><div class="ps-value" id="psLat">--</div></div>
+        <div class="ps-item" style="grid-column:1/3"><div class="ps-label">FEN</div><div class="ps-value" id="psFen" style="font-size:10px;word-break:break-all">--</div></div>
+        <div class="ps-item"><div class="ps-label">Frames</div><div class="ps-value" id="psFrames">0</div></div>
+        <div class="ps-item"><div class="ps-label">Session</div><div class="ps-value" id="psSession" style="font-size:9px;word-break:break-all">--</div></div>
+      </div>
+    </div>
+
+    <!-- Coach -->
+    <div class="sb-section">
+      <div class="sb-title">Coach</div>
+      <div class="coach-box" id="coachBox">
+        <div class="coach-empty">Waiting for board detection...</div>
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="sb-section">
+      <div class="sb-title">Event Log</div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+
+    <!-- Service hosts -->
+    <div class="sb-section hosts-section">
+      <div class="sb-title">Service Hosts</div>
+      <div class="field"><label>Signaling</label><input id="hostSignaling" type="text" value=""></div>
+      <div class="field"><label>Vision (8002)</label><input id="hostVision" type="text" value="http://localhost:8002"></div>
+      <div class="field"><label>Session (8003)</label><input id="hostSession" type="text" value="http://localhost:8003"></div>
+      <div class="field"><label>Engine (8001)</label><input id="hostEngine" type="text" value="http://localhost:8001"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ─── Scripts ─────────────────────────────────────────────────────────── -->
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+// ChessVision Client
+//
+// Video sources:
+//   webcam       — getUserMedia, no signaling needed
+//   phone        — WebRTC via room-code pairing (VisionClaw signaling)
+//   meta_glasses — WebRTC via room-code pairing (VisionClaw signaling)
+//
+// Pipeline:
+//   frame → /scan-frame → /sessions/{id}/update → /analyze-position (conditional)
+// ════════════════════════════════════════════════════════════════════════════
+
+const state = {
+  source: 'webcam',        // 'webcam' | 'phone' | 'meta_glasses'
+  running: false,
+  sessionId: null,
+  lastFen: null,
+  lastGoodFen: null,
+  lastAnalyzedFen: null,   // Prevent re-analysis of same FEN
+  consecutiveErrors: 0,
+  frameCount: 0,
+  sampleTimer: null,
+
+  // WebRTC (for phone / glasses)
+  ws: null,
+  pc: null,
+  localStream: null,
+  remoteStream: null,
+  pendingCandidates: [],
+};
+
+const MAX_ERRORS = 5;
+
+// ── Auto-detect signaling host ──────────────────────────────────────────
+// If served from the chessvision server, use same host for signaling.
+// Otherwise use localhost:8090 as default.
+(function initSignalingHost() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  // If loaded from chessvision server (port 8090 or same origin), use same host
+  if (location.port === '8090' || location.hostname !== 'localhost') {
+    document.getElementById('hostSignaling').value = `${proto}//${location.host}`;
+  } else {
+    document.getElementById('hostSignaling').value = `ws://localhost:8090`;
+  }
+})();
+
+// ── Source selection ─────────────────────────────────────────────────────
+function selectSrc(src, btn) {
+  if (state.running) {
+    stopPipeline();
+    log('Source changed — pipeline stopped', 'warn');
+  }
+  state.source = src;
+  document.querySelectorAll('.source-tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  const roomSection = document.getElementById('roomCodeSection');
+  const wcSection = document.getElementById('webcamSection');
+
+  if (src === 'webcam') {
+    roomSection.classList.add('hidden');
+    wcSection.classList.remove('hidden');
+    enumerateCameras();
+  } else {
+    roomSection.classList.remove('hidden');
+    wcSection.classList.add('hidden');
+  }
+}
+
+// ── Camera enumeration ──────────────────────────────────────────────────
+async function enumerateCameras() {
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+    tmp.getTracks().forEach(t => t.stop());
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const sel = document.getElementById('webcamSelect');
+    sel.innerHTML = '';
+    devices.filter(d => d.kind === 'videoinput').forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId;
+      opt.textContent = d.label || `Camera ${sel.options.length + 1}`;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    log('Camera enumeration: ' + e.message, 'err');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// START / STOP
+// ════════════════════════════════════════════════════════════════════════════
+
+async function startPipeline() {
+  if (state.running) return;
+  const connectBtn = document.getElementById('connectBtn');
+  connectBtn.disabled = true;
+
+  try {
+    // 1. Connect video source
+    if (state.source === 'webcam') {
+      await startWebcam();
+    } else {
+      await startWebRTC();
+    }
+
+    // 2. Create ChessMate session
+    const sessionHost = document.getElementById('hostSession').value.replace(/\/$/, '');
+    const mode = document.getElementById('cfgMode').value;
+    const skill = parseInt(document.getElementById('cfgSkill').value);
+
+    const res = await fetch(`${sessionHost}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, skillLevel: skill })
+    });
+    if (!res.ok) throw new Error('Session create failed: HTTP ' + res.status);
+    const sess = await res.json();
+    state.sessionId = sess.session_id;
+    state.lastFen = sess.currentFen || null;
+    state.lastGoodFen = sess.lastKnownGoodFen || null;
+    state.lastAnalyzedFen = null;
+    state.consecutiveErrors = 0;
+    state.frameCount = 0;
+    document.getElementById('psSession').textContent = sess.session_id.slice(0, 8) + '...';
+    log('Session created: ' + sess.session_id, 'ok');
+
+    // 3. Start frame sampling
+    // For webcam, start immediately. For WebRTC, start when stream arrives.
+    state.running = true;
+    if (state.source === 'webcam') {
+      beginSampling();
+    }
+    // WebRTC sampling starts in ontrack handler once remote stream arrives.
+
+    connectBtn.style.display = 'none';
+    document.getElementById('disconnectBtn').style.display = 'block';
+    document.getElementById('videoEmpty').style.display = 'none';
+    document.getElementById('vHud').style.display = 'flex';
+    setHud('connecting');
+    log('Pipeline started — source: ' + state.source, 'ok');
+
+  } catch (e) {
+    log('Start failed: ' + e.message, 'err');
+    connectBtn.disabled = false;
+    stopPipeline();
+  }
+}
+
+function beginSampling() {
+  if (state.sampleTimer) clearInterval(state.sampleTimer);
+  const interval = parseInt(document.getElementById('cfgInterval').value) || 800;
+  state.sampleTimer = setInterval(processFrame, interval);
+  setHud('scanning');
+  log('Sampling started — every ' + interval + 'ms', 'ok');
+}
+
+function stopPipeline() {
+  state.running = false;
+  if (state.sampleTimer) { clearInterval(state.sampleTimer); state.sampleTimer = null; }
+
+  // Close WebRTC
+  if (state.pc) { state.pc.close(); state.pc = null; }
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  if (state.localStream) {
+    state.localStream.getTracks().forEach(t => t.stop());
+    state.localStream = null;
+  }
+  state.remoteStream = null;
+  state.pendingCandidates = [];
+
+  // Close webcam
+  const video = document.getElementById('videoEl');
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+
+  // End ChessMate session
+  if (state.sessionId) {
+    const host = document.getElementById('hostSession').value.replace(/\/$/, '');
+    fetch(`${host}/sessions/${state.sessionId}/end`, { method: 'POST' }).catch(() => {});
+    log('Session ended: ' + state.sessionId, 'ok');
+    state.sessionId = null;
+  }
+
+  state.lastAnalyzedFen = null;
+  state.consecutiveErrors = 0;
+
+  document.getElementById('connectBtn').style.display = 'block';
+  document.getElementById('connectBtn').disabled = false;
+  document.getElementById('disconnectBtn').style.display = 'none';
+  document.getElementById('videoEmpty').style.display = 'flex';
+  document.getElementById('vHud').style.display = 'none';
+  setHeaderStatus('disconnected', 'Disconnected');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// WEBCAM SOURCE
+// ════════════════════════════════════════════════════════════════════════════
+
+async function startWebcam() {
+  const deviceId = document.getElementById('webcamSelect').value;
+  const constraints = {
+    video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' },
+    audio: false
+  };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  const video = document.getElementById('videoEl');
+  video.srcObject = stream;
+
+  // Detect disconnect
+  stream.getVideoTracks().forEach(track => {
+    track.onended = () => {
+      log('Webcam disconnected', 'err');
+      stopPipeline();
+    };
+  });
+
+  log('Source connected: webcam', 'ok');
+  setHeaderStatus('connected', 'Webcam');
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// WEBRTC SOURCE (room-code pairing — VisionClaw flow)
+//
+// This is the original VisionClaw viewer signaling, adapted for ChessVision.
+// The protocol is identical:
+//   1. Browser connects to signaling WebSocket
+//   2. Sends { type: "join", room: "<6-char code>" }
+//   3. Receives SDP offer from iOS/glasses, responds with answer
+//   4. ICE candidates exchanged
+//   5. Media stream arrives via ontrack
+//
+// What was reused: entire signaling protocol, TURN fetch, candidate buffering
+// What was changed: video goes to ChessVision UI instead of VisionClaw fullscreen
+// ════════════════════════════════════════════════════════════════════════════
+
+async function startWebRTC() {
+  const code = document.getElementById('roomCodeInput').value.toUpperCase().trim();
+  if (code.length !== 6) throw new Error('Room code must be exactly 6 characters');
+
+  const signalingUrl = document.getElementById('hostSignaling').value.replace(/\/$/, '');
+  if (!signalingUrl) throw new Error('Signaling server URL is required');
+
+  log('Joining room: ' + code, 'info');
+  setHeaderStatus('waiting', 'Joining ' + code + '...');
+
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(signalingUrl);
+    state.ws = ws;
+
+    const timeout = setTimeout(() => {
+      reject(new Error('Signaling connection timeout'));
+      ws.close();
+    }, 10000);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: 'join', room: code }));
+      log('Signaling connected, joining room...', 'info');
+    };
+
+    ws.onmessage = async (e) => {
+      const msg = JSON.parse(e.data);
+      switch (msg.type) {
+        case 'room_joined':
+          clearTimeout(timeout);
+          log('Room joined — waiting for stream', 'ok');
+          setHeaderStatus('waiting', 'Waiting for stream...');
+          resolve(); // Connected to room, pipeline can proceed
+          break;
+
+        case 'offer':
+          log('SDP offer received, setting up peer connection', 'info');
+          state.pendingCandidates = [];
+          await setupPeerConnection(ws);
+          await state.pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+          // Flush buffered candidates
+          for (const c of state.pendingCandidates) {
+            await state.pc.addIceCandidate(c);
+          }
+          state.pendingCandidates = [];
+          const answer = await state.pc.createAnswer();
+          await state.pc.setLocalDescription(answer);
+          ws.send(JSON.stringify({ type: 'answer', sdp: answer.sdp }));
+          log('SDP answer sent', 'info');
+          break;
+
+        case 'candidate': {
+          const candidate = {
+            candidate: msg.candidate,
+            sdpMid: msg.sdpMid,
+            sdpMLineIndex: msg.sdpMLineIndex
+          };
+          if (state.pc && state.pc.remoteDescription) {
+            await state.pc.addIceCandidate(candidate);
+          } else {
+            state.pendingCandidates.push(candidate);
+          }
+          break;
+        }
+
+        case 'peer_left':
+          log('Remote peer left — waiting for reconnect', 'warn');
+          setHeaderStatus('waiting', 'Waiting for reconnect...');
+          if (state.pc) { state.pc.close(); state.pc = null; }
+          state.remoteStream = null;
+          break;
+
+        case 'error':
+          clearTimeout(timeout);
+          log('Signaling error: ' + msg.message, 'err');
+          reject(new Error('Signaling: ' + msg.message));
+          break;
+      }
+    };
+
+    ws.onclose = () => {
+      clearTimeout(timeout);
+      if (state.running) {
+        log('Signaling disconnected', 'err');
+        stopPipeline();
+      }
+    };
+
+    ws.onerror = () => {
+      clearTimeout(timeout);
+      reject(new Error('WebSocket connection failed'));
+    };
+  });
+}
+
+async function setupPeerConnection(ws) {
+  if (state.pc) { state.pc.close(); state.pc = null; }
+
+  // Fetch TURN credentials (same endpoint as VisionClaw)
+  let iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ];
+  try {
+    const sigHost = document.getElementById('hostSignaling').value
+      .replace('wss://', 'https://').replace('ws://', 'http://');
+    const resp = await fetch(sigHost + '/api/turn');
+    const creds = await resp.json();
+    if (creds && creds.iceServers) {
+      for (const s of creds.iceServers) {
+        iceServers.push({ urls: s.urls, username: s.username, credential: s.credential });
+      }
+      log('TURN credentials loaded', 'ok');
+    }
+  } catch (e) {
+    log('TURN fetch failed, STUN only: ' + e.message, 'warn');
+  }
+
+  state.pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 2 });
+
+  // We don't need to send our own camera to glasses — audio only if available
+  try {
+    state.localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    state.localStream.getTracks().forEach(t => state.pc.addTrack(t, state.localStream));
+  } catch (e) {
+    // No mic is fine for chess coaching
+    state.localStream = null;
+  }
+
+  // Receive remote video (the glasses/phone POV)
+  state.pc.ontrack = (e) => {
+    if (e.streams && e.streams[0]) {
+      state.remoteStream = e.streams[0];
+      const video = document.getElementById('videoEl');
+      video.srcObject = state.remoteStream;
+      document.getElementById('videoEmpty').style.display = 'none';
+      log('Remote video stream received', 'ok');
+
+      // Start frame sampling now that we have video
+      if (state.running && !state.sampleTimer) {
+        beginSampling();
+      }
+    }
+  };
+
+  state.pc.onicecandidate = (e) => {
+    if (e.candidate && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'candidate',
+        candidate: e.candidate.candidate,
+        sdpMid: e.candidate.sdpMid,
+        sdpMLineIndex: e.candidate.sdpMLineIndex
+      }));
+    }
+  };
+
+  state.pc.oniceconnectionstatechange = () => {
+    const iceState = state.pc?.iceConnectionState;
+    switch (iceState) {
+      case 'connected':
+      case 'completed':
+        setHeaderStatus('connected', state.source === 'meta_glasses' ? 'Glasses' : 'Phone');
+        setHud('scanning');
+        log('WebRTC connected', 'ok');
+        break;
+      case 'disconnected':
+        setHud('reconnecting');
+        log('WebRTC disconnected, attempting reconnect...', 'warn');
+        break;
+      case 'failed':
+        log('WebRTC connection failed', 'err');
+        stopPipeline();
+        break;
+    }
+  };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// FRAME SAMPLING & CHESS PIPELINE
+// ════════════════════════════════════════════════════════════════════════════
+
+function captureFrame() {
+  const video = document.getElementById('videoEl');
+  if (!video.videoWidth) return null;
+
+  const canvas = document.getElementById('frameCanvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+}
+
+async function processFrame() {
+  if (!state.running) return;
+
+  const b64 = captureFrame();
+  if (!b64) return;
+
+  state.frameCount++;
+  document.getElementById('psFrames').textContent = state.frameCount;
+
+  const visionHost = document.getElementById('hostVision').value.replace(/\/$/, '');
+  const sessionHost = document.getElementById('hostSession').value.replace(/\/$/, '');
+  const engineHost = document.getElementById('hostEngine').value.replace(/\/$/, '');
+
+  try {
+    // ── Vision scan ──
+    const scanRes = await fetch(`${visionHost}/scan-frame`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_b64: b64,
+        input_mode: state.source,
+        previous_fen: state.lastFen,
+        last_known_good_fen: state.lastGoodFen,
+        debug: false
+      })
+    });
+    if (!scanRes.ok) throw new Error('Vision HTTP ' + scanRes.status);
+    const scan = await scanRes.json();
+    state.consecutiveErrors = 0;
+
+    updatePipelineStatus(scan);
+
+    if (!scan.board_found) {
+      setHud('no-board');
+      log('Board not found (stage ' + scan.stage_reached + ')', 'warn');
+      return;
+    }
+
+    if (!scan.legal) log('Illegal FEN: ' + (scan.error || scan.fen), 'warn');
+    if (scan.used_fallback) log('Fallback used — ' + (scan.confidence * 100).toFixed(0) + '%', 'warn');
+    else log('Scan success — ' + (scan.confidence * 100).toFixed(0) + '%, stage ' + scan.stage_reached, 'ok');
+
+    setHud('scanning');
+
+    // ── Session update ──
+    const updRes = await fetch(`${sessionHost}/sessions/${state.sessionId}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: state.sessionId,
+        new_fen: scan.fen,
+        legal: scan.legal,
+        confidence: scan.confidence,
+        used_fallback: scan.used_fallback,
+        latency_ms: scan.latency_ms || 0
+      })
+    });
+    if (!updRes.ok) throw new Error('Session HTTP ' + updRes.status);
+    const sess = await updRes.json();
+    state.lastFen = sess.currentFen;
+    state.lastGoodFen = sess.lastKnownGoodFen;
+
+    // ── Engine (only on accepted FEN change) ──
+    const shouldAnalyze =
+      scan.legal &&
+      !scan.used_fallback &&
+      scan.confidence >= 0.65 &&
+      sess.lastKnownGoodFen &&
+      sess.lastKnownGoodFen !== state.lastAnalyzedFen;
+
+    if (shouldAnalyze) {
+      setHud('coaching');
+      const engRes = await fetch(`${engineHost}/analyze-position`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fen: sess.lastKnownGoodFen,
+          mode: sess.mode,
+          skillLevel: sess.skillLevel,
+          depth: 10,
+          multiPv: 3
+        })
+      });
+      if (!engRes.ok) throw new Error('Engine HTTP ' + engRes.status);
+      const eng = await engRes.json();
+      state.lastAnalyzedFen = sess.lastKnownGoodFen;
+      updateCoach(eng);
+      log('Engine analyzed — best: ' + eng.bestMove + ' (' + eng.evaluation.toFixed(2) + ')', 'ok');
+      log('Coach updated', 'ok');
+      setHud('scanning');
+    }
+
+  } catch (e) {
+    state.consecutiveErrors++;
+    log('Frame error (' + state.consecutiveErrors + '/' + MAX_ERRORS + '): ' + e.message, 'err');
+    if (state.consecutiveErrors >= MAX_ERRORS) {
+      log('Too many consecutive errors — stopping', 'err');
+      stopPipeline();
+    }
+  }
+}
+
+// ── UI updates ──────────────────────────────────────────────────────────
+
+function updatePipelineStatus(scan) {
+  const bf = document.getElementById('psBoard');
+  bf.textContent = scan.board_found ? 'Yes' : 'No';
+  bf.className = 'ps-value ' + (scan.board_found ? 'good' : 'warn');
+
+  const st = document.getElementById('psStage');
+  st.textContent = scan.stage_reached + '/8';
+  st.className = 'ps-value ' + (scan.stage_reached >= 7 ? 'good' : scan.stage_reached >= 4 ? 'warn' : 'bad');
+
+  const cf = document.getElementById('psConf');
+  const c = scan.confidence || 0;
+  cf.textContent = (c * 100).toFixed(0) + '%';
+  cf.className = 'ps-value ' + (c >= 0.65 ? 'good' : c >= 0.3 ? 'warn' : 'bad');
+
+  const lt = document.getElementById('psLat');
+  const ms = scan.latency_ms || 0;
+  lt.textContent = ms.toFixed(0) + 'ms';
+  lt.className = 'ps-value ' + (ms < 400 ? 'good' : ms < 800 ? 'warn' : 'bad');
+
+  const fe = document.getElementById('psFen');
+  if (scan.used_fallback && scan.fen) {
+    fe.innerHTML = '<span class="fallback-badge">Fallback</span> ' + scan.fen;
+  } else {
+    fe.textContent = scan.fen || '--';
+  }
+}
+
+function updateCoach(eng) {
+  const el = document.getElementById('coachBox');
+  const evalSign = eng.evaluation >= 0 ? '+' : '';
+  const evalStr = Math.abs(eng.evaluation) >= 999
+    ? (eng.evaluation > 0 ? '+M' : '-M')
+    : evalSign + eng.evaluation.toFixed(2);
+
+  el.innerHTML =
+    '<div class="coach-move">' + eng.bestMove + '</div>' +
+    '<div class="coach-eval">Eval: ' + evalStr + '</div>' +
+    '<div class="coach-text">' + eng.coachText + '</div>' +
+    '<div class="coach-speak">"' + eng.speakText + '"</div>';
+}
+
+function setHud(s) {
+  const dot = document.getElementById('hudDot');
+  const label = document.getElementById('hudLabel');
+  dot.className = 'dot';
+  switch (s) {
+    case 'scanning':     dot.classList.add('dot-green'); label.textContent = 'Scanning'; break;
+    case 'coaching':     dot.classList.add('dot-green'); label.textContent = 'Analyzing'; break;
+    case 'no-board':     dot.classList.add('dot-amber'); label.textContent = 'No board'; break;
+    case 'connecting':   dot.classList.add('dot-amber'); label.textContent = 'Connecting'; break;
+    case 'reconnecting': dot.classList.add('dot-amber'); label.textContent = 'Reconnecting'; break;
+    default:             dot.classList.add('dot-off');   label.textContent = 'Idle';
+  }
+}
+
+function setHeaderStatus(type, text) {
+  const dot = document.getElementById('headerDot');
+  dot.className = 'dot';
+  switch (type) {
+    case 'connected':    dot.classList.add('dot-green'); break;
+    case 'waiting':      dot.classList.add('dot-amber'); break;
+    case 'disconnected': dot.classList.add('dot-red'); break;
+    default:             dot.classList.add('dot-off');
+  }
+  document.getElementById('headerStatusText').textContent = text;
+}
+
+function log(msg, level) {
+  const el = document.getElementById('logBox');
+  const cls = level || 'info';
+  const ts = new Date().toLocaleTimeString('en-US', { hour12: false });
+  el.innerHTML += '<div class="' + cls + '">[' + ts + '] ' + msg + '</div>';
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Room code input: Enter to connect ───────────────────────────────────
+document.getElementById('roomCodeInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') startPipeline();
+});
+
+// ── Enumerate cameras on load ───────────────────────────────────────────
+if (navigator.mediaDevices) enumerateCameras();
+</script>
+</body>
+</html>

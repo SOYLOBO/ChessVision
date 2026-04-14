@@ -1,0 +1,13 @@
+{
+  "name": "chessvision",
+  "version": "1.0.0",
+  "description": "ChessVision — live video source manager for ChessMate AI. Handles webcam, phone camera, and Meta glasses WebRTC streams with room-code pairing.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}
