@@ -94,12 +94,33 @@ struct StreamView: View {
         .padding(.all, 24)
       }
 
+      // Tap-to-focus indicator
+      if let fp = viewModel.focusPoint {
+        FocusIndicatorView()
+          .position(fp)
+      }
+
       // Bottom controls layer
       VStack {
         Spacer()
+        if viewModel.streamingMode == .iPhone && viewModel.availableLenses.count > 1 {
+          LensSelectorView(
+            lenses: viewModel.availableLenses,
+            current: viewModel.currentLens
+          ) { lens in
+            viewModel.switchLens(lens)
+          }
+          .padding(.bottom, 12)
+        }
         ControlsView(viewModel: viewModel, geminiVM: geminiVM, webrtcVM: webrtcVM)
       }
       .padding(.all, 24)
+    }
+    .contentShape(Rectangle())
+    .onTapGesture { location in
+      guard viewModel.streamingMode == .iPhone else { return }
+      let screen = UIScreen.main.bounds.size
+      viewModel.tapToFocus(at: location, in: screen)
     }
     .onDisappear {
       Task {
@@ -206,5 +227,54 @@ struct ControlsView: View {
       .opacity(geminiVM.isGeminiActive ? 0.4 : 1.0)
       .disabled(geminiVM.isGeminiActive)
     }
+  }
+}
+
+struct LensSelectorView: View {
+  let lenses: [CameraLens]
+  let current: CameraLens
+  let onSelect: (CameraLens) -> Void
+
+  var body: some View {
+    HStack(spacing: 4) {
+      ForEach(lenses) { lens in
+        Button {
+          onSelect(lens)
+        } label: {
+          Text(lens.rawValue)
+            .font(.system(size: 13, weight: lens == current ? .bold : .regular, design: .rounded))
+            .foregroundColor(lens == current ? .yellow : .white)
+            .frame(width: 40, height: 40)
+            .background(
+              Circle()
+                .fill(lens == current ? Color.white.opacity(0.25) : Color.black.opacity(0.4))
+            )
+        }
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .background(Capsule().fill(Color.black.opacity(0.5)))
+  }
+}
+
+struct FocusIndicatorView: View {
+  @State private var scale: CGFloat = 1.5
+  @State private var opacity: Double = 1.0
+
+  var body: some View {
+    RoundedRectangle(cornerRadius: 4)
+      .stroke(Color.yellow, lineWidth: 2)
+      .frame(width: 70, height: 70)
+      .scaleEffect(scale)
+      .opacity(opacity)
+      .onAppear {
+        withAnimation(.easeOut(duration: 0.3)) {
+          scale = 1.0
+        }
+        withAnimation(.easeIn(duration: 0.3).delay(0.6)) {
+          opacity = 0
+        }
+      }
   }
 }

@@ -43,6 +43,9 @@ class StreamSessionViewModel: ObservableObject {
   @Published var hasActiveDevice: Bool = false
   @Published var streamingMode: StreamingMode = .glasses
   @Published var selectedResolution: StreamingResolution = .low
+  @Published var focusPoint: CGPoint?
+  @Published var availableLenses: [CameraLens] = []
+  @Published var currentLens: CameraLens = .wide
 
   var isStreaming: Bool {
     streamingStatus != .stopped
@@ -300,6 +303,8 @@ class StreamSessionViewModel: ObservableObject {
     }
     camera.start()
     iPhoneCameraManager = camera
+    availableLenses = CameraLens.available()
+    currentLens = .wide
     streamingStatus = .streaming
     NSLog("[Stream] iPhone camera mode started")
   }
@@ -321,6 +326,26 @@ class StreamSessionViewModel: ObservableObject {
 
   func capturePhoto() {
     streamSession.capturePhoto(format: .jpeg)
+  }
+
+  func switchLens(_ lens: CameraLens) {
+    guard streamingMode == .iPhone, let camera = iPhoneCameraManager else { return }
+    camera.switchLens(lens)
+    currentLens = lens
+  }
+
+  func tapToFocus(at viewPoint: CGPoint, in viewSize: CGSize) {
+    guard streamingMode == .iPhone, let camera = iPhoneCameraManager else { return }
+    let devicePoint = CGPoint(
+      x: viewPoint.x / viewSize.width,
+      y: viewPoint.y / viewSize.height
+    )
+    camera.focusAt(point: devicePoint)
+    focusPoint = viewPoint
+    Task {
+      try? await Task.sleep(for: .seconds(1))
+      focusPoint = nil
+    }
   }
 
   func dismissPhotoPreview() {

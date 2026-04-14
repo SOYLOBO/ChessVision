@@ -21,6 +21,8 @@ class AnalyzeFrameRequest(BaseModel):
     previous_fen:        Optional[str] = Field(None, description="previousFen from session — used for diff validation.")
     last_known_good_fen: Optional[str] = Field(None, description="lastKnownGoodFen — returned unchanged on low-confidence frames.")
     debug:               bool      = Field(False, description="When True, include base64 debug images in response.")
+    pinned_corners:      Optional[list[list[float]]] = Field(None, description="4 corners [[x,y],...] in TL,TR,BR,BL order — skips board detection.")
+    white_side:          Optional[str] = Field(None, description="Which edge white plays from: bottom, top, left, right.")
 
 
 # ── Sub-models ────────────────────────────────────────────────────────────

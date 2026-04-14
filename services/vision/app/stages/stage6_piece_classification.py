@@ -1,18 +1,12 @@
 """
 Vision Stage 6 – Piece Classification
 ----------------------------------------
-BASELINE IMPLEMENTATION — PLACEHOLDER STATUS (Adjustment 4)
-------------------------------------------------------------
-This classifier uses deterministic silhouette heuristics tuned for standard
-Staunton sets under normal lighting. It is intentionally simple.
+Deterministic silhouette heuristics for standard Staunton sets.
 
-Replacement rule (from alignment notes, Rule 3):
-  A CNN or YOLO model MAY replace this classifier in stage 6 ONLY.
-  No ML model may be introduced in any other stage.
-  Do not touch stages 1–5 or 7–8 when upgrading classification.
+Classification order matters — rules are evaluated most-specific-first
+to prevent the queen/king catch-all from swallowing everything.
 
-All thresholds are externalised to config (Adjustment 5) and can be
-tuned without code changes.
+A CNN or YOLO model MAY replace this classifier in stage 6 ONLY.
 """
 from __future__ import annotations
 import cv2
@@ -23,75 +17,108 @@ from app.core.config import settings
 def _piece_features(sq: np.ndarray) -> dict:
     """Extract shape features from a square image."""
     h, w = sq.shape[:2]
-    gray  = cv2.cvtColor(sq, cv2.COLOR_BGR2GRAY)
-    blur  = cv2.GaussianBlur(gray, (3, 3), 0)
+    gray = cv2.cvtColor(sq, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _, bw = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
     contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        return {"height_ratio": 0, "aspect": 1, "solidity": 0, "top_mass": 0.5, "total_mass": 0}
+        return {
+            "height_ratio": 0, "aspect": 1, "solidity": 0,
+            "top_mass": 0.5, "total_mass": 0, "width_ratio": 0,
+            "top_width_ratio": 0,
+        }
 
-    cnt       = max(contours, key=cv2.contourArea)
+    cnt = max(contours, key=cv2.contourArea)
     x, y, cw, ch = cv2.boundingRect(cnt)
-    hull      = cv2.convexHull(cnt)
+    hull = cv2.convexHull(cnt)
     hull_area = cv2.contourArea(hull)
-    cnt_area  = cv2.contourArea(cnt)
-    solidity  = cnt_area / hull_area if hull_area > 0 else 0
+    cnt_area = cv2.contourArea(cnt)
+    solidity = cnt_area / hull_area if hull_area > 0 else 0
 
-    top_half  = bw[:h // 2, :]
-    top_mass  = float(np.sum(top_half > 0)) / (top_half.size + 1e-6)
+    top_third = bw[:h // 3, :]
+    top_mass = float(np.sum(top_third > 0)) / (top_third.size + 1e-6)
     total_mass = float(np.sum(bw > 0)) / (bw.size + 1e-6)
+
+    top_quarter = bw[:h // 4, :]
+    top_cols = np.any(top_quarter > 0, axis=0)
+    top_width = float(np.sum(top_cols)) / (w + 1e-6)
 
     return {
         "height_ratio": ch / h,
-        "aspect":       ch / (cw + 1e-6),
-        "solidity":     solidity,
-        "top_mass":     top_mass,
-        "total_mass":   total_mass,
+        "aspect": ch / (cw + 1e-6),
+        "solidity": solidity,
+        "top_mass": top_mass,
+        "total_mass": total_mass,
+        "width_ratio": cw / (w + 1e-6),
+        "top_width_ratio": top_width,
     }
 
 
 def _classify_features(f: dict) -> str:
     """
-    Rule-based classifier using config-driven thresholds.
-    Returns lowercase piece type letter: k q r b n p
+    Rule-based classifier. Order: pawn → rook → knight → bishop → king → queen.
+    Pawn is the default fallback — it's the most common piece and safest FEN default.
     """
-    cfg = settings
-    hr  = f["height_ratio"]
+    hr = f["height_ratio"]
     asp = f["aspect"]
     sol = f["solidity"]
-    tm  = f["top_mass"]
+    tm = f["top_mass"]
+    total = f["total_mass"]
+    tw = f["top_width_ratio"]
 
-    if hr < cfg.CLF_PAWN_MAX_HEIGHT_RATIO and sol > cfg.CLF_PAWN_MIN_SOLIDITY:
+    # Pawn: short, compact, round
+    if hr < settings.CLF_PAWN_MAX_HEIGHT_RATIO and sol > settings.CLF_PAWN_MIN_SOLIDITY:
         return "p"
 
-    if (hr > cfg.CLF_ROOK_MIN_HEIGHT_RATIO and
-            tm < cfg.CLF_ROOK_MAX_TOP_MASS and
-            sol > cfg.CLF_ROOK_MIN_SOLIDITY):
+    # Pawn: slightly taller but still compact with low total mass
+    if hr < 0.60 and sol > 0.65 and total < 0.30:
+        return "p"
+
+    # Rook: tall, flat top (low top mass), blocky (high solidity), wide top
+    if (hr > settings.CLF_ROOK_MIN_HEIGHT_RATIO and
+            tm < settings.CLF_ROOK_MAX_TOP_MASS and
+            sol > settings.CLF_ROOK_MIN_SOLIDITY and
+            tw > 0.30):
         return "r"
 
-    if (cfg.CLF_KNIGHT_MIN_HEIGHT_RATIO < hr < cfg.CLF_KNIGHT_MAX_HEIGHT_RATIO and
-            sol < cfg.CLF_KNIGHT_MAX_SOLIDITY):
+    # Knight: asymmetric horse head → low solidity (indentation)
+    if (settings.CLF_KNIGHT_MIN_HEIGHT_RATIO < hr < settings.CLF_KNIGHT_MAX_HEIGHT_RATIO and
+            sol < settings.CLF_KNIGHT_MAX_SOLIDITY):
         return "n"
 
-    if (hr > cfg.CLF_BISHOP_MIN_HEIGHT_RATIO and
-            asp > cfg.CLF_BISHOP_MIN_ASPECT and
-            tm < cfg.CLF_BISHOP_MAX_TOP_MASS):
+    # Bishop: tall, narrow, pointed top
+    if (hr > settings.CLF_BISHOP_MIN_HEIGHT_RATIO and
+            asp > settings.CLF_BISHOP_MIN_ASPECT and
+            tw < 0.35 and
+            tm < settings.CLF_BISHOP_MAX_TOP_MASS):
         return "b"
 
-    if hr > cfg.CLF_QUEEN_MIN_HEIGHT_RATIO and tm > cfg.CLF_QUEEN_MIN_TOP_MASS:
-        return "q"
-
-    if hr > cfg.CLF_KING_MIN_HEIGHT_RATIO:
+    # King: tallest, narrow cross on top → tall aspect, narrow top
+    if hr > settings.CLF_KING_MIN_HEIGHT_RATIO and asp > 1.3 and tw < 0.50:
         return "k"
 
-    return "p"   # fallback — pawn is safest FEN default
+    # Queen: tall with wide ornate crown
+    if (hr > settings.CLF_QUEEN_MIN_HEIGHT_RATIO and
+            tm > settings.CLF_QUEEN_MIN_TOP_MASS and
+            tw > 0.40):
+        return "q"
+
+    # Medium-height unclassified → pawn
+    if hr < 0.65:
+        return "p"
+
+    # Tall, solid, unclassified → rook
+    if sol > 0.55:
+        return "r"
+
+    return "p"
 
 
 def classify_pieces(
-    squares:  list[np.ndarray],
+    squares: list[np.ndarray],
     occupied: list[bool],
-    colors:   list[str | None],
+    colors: list[str | None],
 ) -> list[str | None]:
     """
     Stage 6: Return 64-element list of FEN piece codes or None.

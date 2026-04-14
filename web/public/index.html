@@ -237,6 +237,53 @@ body {
   border-radius: 100px; padding: 2px 8px;
 }
 
+/* ─── Corner Pin Overlay ──────────────────────────────────────────────── */
+.pin-overlay {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+  z-index: 10; cursor: crosshair;
+}
+.pin-overlay svg { width: 100%; height: 100%; pointer-events: none; }
+.pin-dot {
+  fill: var(--green); stroke: #000; stroke-width: 2;
+  cursor: grab; filter: drop-shadow(0 0 4px rgba(110,224,138,0.6));
+}
+.pin-label {
+  font-size: 11px; font-family: var(--mono); fill: var(--green);
+  text-anchor: middle; pointer-events: none;
+}
+.pin-line { stroke: var(--green); stroke-width: 2; fill: none; opacity: 0.6; }
+.pin-toolbar {
+  position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+  z-index: 11; display: flex; gap: 8px;
+}
+.pin-btn {
+  font-family: var(--font); font-size: 12px; font-weight: 600;
+  padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer;
+}
+.pin-btn.confirm { background: var(--green); color: var(--bg); }
+.pin-btn.cancel { background: var(--bg-3); color: var(--text); }
+.pin-btn.clear { background: var(--amber); color: var(--bg); }
+
+/* ─── Board Setup Section ─────────────────────────────────────────────── */
+.white-side-row {
+  display: flex; gap: 4px; margin-top: 6px;
+}
+.ws-btn {
+  flex: 1; font-family: var(--font); font-size: 11px; font-weight: 500;
+  padding: 6px 4px; border-radius: 6px; border: 1px solid var(--border);
+  background: transparent; color: var(--text-2); cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  text-align: center;
+}
+.ws-btn:hover { background: var(--bg-3); color: var(--text); }
+.ws-btn.active { background: var(--green); color: var(--bg); border-color: var(--green); font-weight: 600; }
+
+.pin-status {
+  font-size: 11px; color: var(--text-3); margin-top: 6px;
+  display: flex; align-items: center; gap: 6px;
+}
+.pin-status .dot { width: 6px; height: 6px; }
+
 /* ─── Responsive ───────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .app-body {
@@ -339,7 +386,29 @@ body {
       </div>
       <div class="field">
         <label>Sample interval (ms)</label>
-        <input id="cfgInterval" type="number" min="200" max="5000" step="100" value="800">
+        <input id="cfgInterval" type="number" min="200" max="10000" step="100" value="3000">
+      </div>
+    </div>
+
+    <!-- Board Setup -->
+    <div class="sb-section">
+      <div class="sb-title">Board Setup</div>
+      <div class="field">
+        <label>White plays from</label>
+        <div class="white-side-row">
+          <button class="ws-btn active" data-side="bottom" onclick="selectWhiteSide('bottom',this)">Bottom</button>
+          <button class="ws-btn" data-side="top" onclick="selectWhiteSide('top',this)">Top</button>
+          <button class="ws-btn" data-side="left" onclick="selectWhiteSide('left',this)">Left</button>
+          <button class="ws-btn" data-side="right" onclick="selectWhiteSide('right',this)">Right</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>Board corners</label>
+        <button class="pin-btn confirm" onclick="startCornerPin()" id="pinStartBtn" style="width:100%;margin-top:4px">Pin Corners</button>
+        <div class="pin-status" id="pinStatus">
+          <span class="dot dot-off" id="pinDot"></span>
+          <span id="pinStatusText">Auto-detect (no pins)</span>
+        </div>
       </div>
     </div>
 
@@ -414,9 +483,16 @@ const state = {
   localStream: null,
   remoteStream: null,
   pendingCandidates: [],
+
+  // Board setup
+  pinnedCorners: null,     // [[x,y],[x,y],[x,y],[x,y]] in video pixel coords or null
+  whiteSide: 'bottom',     // 'bottom' | 'top' | 'left' | 'right'
+  pinning: false,          // true while corner pin mode is active
+  pinPoints: [],           // temp array during pinning
 };
 
 const MAX_ERRORS = 5;
+const PIN_LABELS = ['TL', 'TR', 'BR', 'BL'];
 
 // ── Auto-detect signaling host ──────────────────────────────────────────
 // If served from the chessvision server, use same host for signaling.
@@ -588,7 +664,10 @@ function stopPipeline() {
 async function startWebcam() {
   const deviceId = document.getElementById('webcamSelect').value;
   const constraints = {
-    video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' },
+    video: Object.assign(
+      { width: { ideal: 1920 }, height: { ideal: 1080 } },
+      deviceId ? { deviceId: { exact: deviceId } } : { facingMode: 'environment' }
+    ),
     audio: false
   };
   const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -810,7 +889,7 @@ function captureFrame() {
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   canvas.getContext('2d').drawImage(video, 0, 0);
-  return canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+  return canvas.toDataURL('image/jpeg', 0.95).split(',')[1];
 }
 
 async function processFrame() {
@@ -836,7 +915,9 @@ async function processFrame() {
         input_mode: state.source,
         previous_fen: state.lastFen,
         last_known_good_fen: state.lastGoodFen,
-        debug: false
+        debug: false,
+        pinned_corners: state.pinnedCorners,
+        white_side: state.whiteSide
       })
     });
     if (!scanRes.ok) throw new Error('Vision HTTP ' + scanRes.status);
@@ -996,6 +1077,165 @@ function log(msg, level) {
 document.getElementById('roomCodeInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') startPipeline();
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// BOARD SETUP — CORNER PIN + WHITE SIDE
+// ════════════════════════════════════════════════════════════════════════════
+
+function selectWhiteSide(side, btn) {
+  state.whiteSide = side;
+  document.querySelectorAll('.ws-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  log('White side set to: ' + side, 'info');
+}
+
+function startCornerPin() {
+  state.pinning = true;
+  state.pinPoints = [];
+  const panel = document.getElementById('videoPanel');
+
+  // Create SVG overlay
+  let overlay = document.getElementById('pinOverlay');
+  if (overlay) overlay.remove();
+  overlay = document.createElement('div');
+  overlay.id = 'pinOverlay';
+  overlay.className = 'pin-overlay';
+  overlay.innerHTML = `
+    <svg id="pinSvg"></svg>
+    <div class="pin-toolbar">
+      <button class="pin-btn cancel" onclick="cancelCornerPin()">Cancel</button>
+      <button class="pin-btn clear" onclick="resetPinPoints()">Reset</button>
+      <button class="pin-btn cancel" onclick="undoPinPoint()">Undo</button>
+      <button class="pin-btn confirm" onclick="confirmCornerPin()" id="pinConfirmBtn" disabled>Confirm (0/4)</button>
+    </div>
+  `;
+  panel.appendChild(overlay);
+
+  overlay.addEventListener('click', onPinClick);
+  log('Corner pin mode — tap 4 corners: TL → TR → BR → BL', 'info');
+}
+
+function onPinClick(e) {
+  if (!state.pinning || state.pinPoints.length >= 4) return;
+  if (e.target.closest('.pin-toolbar')) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  state.pinPoints.push([x, y]);
+  renderPinPoints();
+
+  const btn = document.getElementById('pinConfirmBtn');
+  btn.textContent = `Confirm (${state.pinPoints.length}/4)`;
+  if (state.pinPoints.length === 4) {
+    btn.disabled = false;
+  }
+}
+
+function renderPinPoints() {
+  const svg = document.getElementById('pinSvg');
+  if (!svg) return;
+  let html = '';
+
+  // Draw lines between placed points
+  if (state.pinPoints.length >= 2) {
+    let pathD = `M ${state.pinPoints[0][0]} ${state.pinPoints[0][1]}`;
+    for (let i = 1; i < state.pinPoints.length; i++) {
+      pathD += ` L ${state.pinPoints[i][0]} ${state.pinPoints[i][1]}`;
+    }
+    if (state.pinPoints.length === 4) pathD += ' Z';
+    html += `<path class="pin-line" d="${pathD}" />`;
+  }
+
+  // Draw dots and labels
+  for (let i = 0; i < state.pinPoints.length; i++) {
+    const [px, py] = state.pinPoints[i];
+    html += `<circle class="pin-dot" cx="${px}" cy="${py}" r="8" />`;
+    html += `<text class="pin-label" x="${px}" y="${py - 14}">${PIN_LABELS[i]}</text>`;
+  }
+
+  svg.innerHTML = html;
+}
+
+function undoPinPoint() {
+  if (state.pinPoints.length === 0) return;
+  state.pinPoints.pop();
+  renderPinPoints();
+  const btn = document.getElementById('pinConfirmBtn');
+  btn.textContent = `Confirm (${state.pinPoints.length}/4)`;
+  btn.disabled = true;
+}
+
+function resetPinPoints() {
+  state.pinPoints = [];
+  renderPinPoints();
+  const btn = document.getElementById('pinConfirmBtn');
+  btn.textContent = 'Confirm (0/4)';
+  btn.disabled = true;
+}
+
+function cancelCornerPin() {
+  state.pinning = false;
+  state.pinPoints = [];
+  const overlay = document.getElementById('pinOverlay');
+  if (overlay) overlay.remove();
+  log('Corner pin cancelled', 'info');
+}
+
+function clearCornerPin() {
+  // Clear saved pins entirely
+  state.pinnedCorners = null;
+  state.pinning = false;
+  state.pinPoints = [];
+  const overlay = document.getElementById('pinOverlay');
+  if (overlay) overlay.remove();
+  document.getElementById('pinDot').className = 'dot dot-off';
+  document.getElementById('pinStatusText').textContent = 'Auto-detect (no pins)';
+  document.getElementById('pinStartBtn').textContent = 'Pin Corners';
+  log('Corner pins cleared — using auto-detect', 'info');
+}
+
+function confirmCornerPin() {
+  if (state.pinPoints.length !== 4) return;
+
+  // Convert overlay pixel coords to video pixel coords
+  const video = document.getElementById('videoEl');
+  const panel = document.getElementById('videoPanel');
+  const panelRect = panel.getBoundingClientRect();
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+
+  // Calculate video display rect within the panel (object-fit: contain)
+  const panelAspect = panelRect.width / panelRect.height;
+  const videoAspect = vw / vh;
+  let dispW, dispH, offX, offY;
+  if (videoAspect > panelAspect) {
+    dispW = panelRect.width;
+    dispH = panelRect.width / videoAspect;
+    offX = 0;
+    offY = (panelRect.height - dispH) / 2;
+  } else {
+    dispH = panelRect.height;
+    dispW = panelRect.height * videoAspect;
+    offX = (panelRect.width - dispW) / 2;
+    offY = 0;
+  }
+
+  state.pinnedCorners = state.pinPoints.map(([px, py]) => {
+    const vidX = ((px - offX) / dispW) * vw;
+    const vidY = ((py - offY) / dispH) * vh;
+    return [Math.round(vidX), Math.round(vidY)];
+  });
+
+  state.pinning = false;
+  state.pinPoints = [];
+  const overlay = document.getElementById('pinOverlay');
+  if (overlay) overlay.remove();
+
+  document.getElementById('pinDot').className = 'dot dot-green';
+  document.getElementById('pinStatusText').textContent = 'Corners pinned ✓';
+  document.getElementById('pinStartBtn').textContent = 'Re-pin Corners';
+  log('Corners pinned: ' + JSON.stringify(state.pinnedCorners), 'ok');
+}
 
 // ── Enumerate cameras on load ───────────────────────────────────────────
 if (navigator.mediaDevices) enumerateCameras();

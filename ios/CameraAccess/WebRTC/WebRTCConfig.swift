@@ -9,8 +9,8 @@ enum WebRTCConfig {
     "stun:stun1.l.google.com:19302",
   ]
 
-  static let maxBitrateBps = 2_500_000  // 2.5 Mbps
-  static let maxFramerate = 24
+  static let maxBitrateBps = 8_000_000  // 8 Mbps — high quality for board detection
+  static let maxFramerate = 30
 
   static var isConfigured: Bool {
     return !signalingServerURL.isEmpty

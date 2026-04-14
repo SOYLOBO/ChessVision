@@ -33,6 +33,11 @@ services:
       MIN_BOARD_AREA_RATIO: 0.10
       INPUT_MODE:           webcam
       DEBUG_SAVE_FRAMES:    "false"
+      USE_GEMINI:           "true"
+      OLLAMA_URL:           "http://host.docker.internal:11434"
+      OLLAMA_MODEL:         "gemma4:e4b"
+      GEMINI_API_KEY:       "${GEMINI_API_KEY:-}"
+      GEMINI_MODEL:         "gemini-2.0-flash"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]

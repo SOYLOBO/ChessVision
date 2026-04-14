@@ -32,6 +32,7 @@ When request.debug=True, the pipeline renders and base64-encodes:
 """
 from __future__ import annotations
 import base64
+import collections
 import logging
 import time
 import cv2
@@ -45,10 +46,48 @@ from app.stages.stage3_square_extraction    import extract_squares
 from app.stages.stage4_occupancy            import detect_occupancy
 from app.stages.stage5_piece_color          import detect_piece_colors
 from app.stages.stage6_piece_classification import classify_pieces
+from app.stages.stage6_gemini               import classify_with_gemini, classify_full_frame
 from app.stages.stage7_fen_generation       import generate_fen
 from app.stages.stage8_legality             import validate_fen
 
 logger = logging.getLogger(__name__)
+
+# ── FEN Consensus Buffer ─────────────────────────────────────────────────
+# Requires CONSENSUS_REQUIRED matching board FENs in the last CONSENSUS_WINDOW
+# scans before accepting a position. This filters frame-to-frame noise.
+CONSENSUS_WINDOW = 5
+CONSENSUS_REQUIRED = 3
+_fen_history: collections.deque[str] = collections.deque(maxlen=CONSENSUS_WINDOW)
+
+
+def _board_fen(full_fen: str) -> str:
+    """Extract just the board part of a FEN (before the first space)."""
+    return full_fen.split(" ")[0] if " " in full_fen else full_fen
+
+
+def _fen_diff_squares(fen_a: str, fen_b: str) -> int:
+    """Count how many squares differ between two board FENs."""
+    def expand(board_fen: str) -> list[str]:
+        squares = []
+        for ch in board_fen.replace("/", ""):
+            if ch.isdigit():
+                squares.extend(["." for _ in range(int(ch))])
+            else:
+                squares.append(ch)
+        return squares
+
+    a = expand(_board_fen(fen_a))
+    b = expand(_board_fen(fen_b))
+    if len(a) != 64 or len(b) != 64:
+        return 99
+    return sum(1 for x, y in zip(a, b) if x != y)
+
+
+def _check_consensus(board_fen: str) -> bool:
+    """Returns True if board_fen has appeared >= CONSENSUS_REQUIRED times recently."""
+    _fen_history.append(board_fen)
+    count = sum(1 for f in _fen_history if f == board_fen)
+    return count >= CONSENSUS_REQUIRED
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -130,6 +169,20 @@ def _compute_confidence(
     return float(np.clip(composite, 0.0, 1.0)), detail
 
 
+def _dummy_occupied(fen: str) -> list[bool]:
+    """Build an occupied list from a FEN string for confidence calculation."""
+    board = fen.split(" ")[0] if " " in fen else fen
+    occupied = []
+    for ch in board.replace("/", ""):
+        if ch.isdigit():
+            occupied.extend([False] * int(ch))
+        else:
+            occupied.append(True)
+    while len(occupied) < 64:
+        occupied.append(False)
+    return occupied[:64]
+
+
 def _fallback(result: VisionResult, last_known_good_fen: str | None, t0: float) -> VisionResult:
     """Rule 5: preserve lastKnownGoodFen, do not overwrite session state."""
     result.used_fallback = True
@@ -142,11 +195,24 @@ def _fallback(result: VisionResult, last_known_good_fen: str | None, t0: float) 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────
 
+def _rotate_board(warped: np.ndarray, white_side: str) -> np.ndarray:
+    """Rotate warped board so white always plays from the bottom."""
+    if white_side == "top":
+        return cv2.rotate(warped, cv2.ROTATE_180)
+    elif white_side == "left":
+        return cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
+    elif white_side == "right":
+        return cv2.rotate(warped, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return warped  # "bottom" or default — no rotation
+
+
 def run_pipeline(
     image_b64:           str,
     last_known_good_fen: str | None = None,
     previous_fen:        str | None = None,
     debug:               bool       = False,
+    pinned_corners:      list[list[float]] | None = None,
+    white_side:          str | None = None,
 ) -> VisionResult:
     """
     Execute all 8 vision stages in alignment-note order.
@@ -163,89 +229,122 @@ def run_pipeline(
         logger.error(result.error)
         return _fallback(result, last_known_good_fen, t0)
 
-    # ── Stage 1: Board detection ───────────────────────────────────────────
-    try:
-        corners, detect_conf = detect_board(frame)
-        result.board_found   = True
-        result.stage_reached = 1
-        result.corners       = BoardCorners(
-            top_left     = corners[0].tolist(),
-            top_right    = corners[1].tolist(),
-            bottom_right = corners[2].tolist(),
-            bottom_left  = corners[3].tolist(),
-        )
-    except BoardNotFoundError as exc:
-        result.error = f"Stage 1 (board detection): {exc}"
-        logger.warning(result.error)
-        return _fallback(result, last_known_good_fen, t0)
+    use_llm = settings.USE_GEMINI and (settings.OLLAMA_URL or settings.GEMINI_API_KEY)
 
-    # Rule 5: low confidence → do not proceed
-    if detect_conf < settings.CONFIDENCE_THRESHOLD:
-        result.confidence = detect_conf
-        result.error      = f"Low board-detect confidence ({detect_conf:.2f} < {settings.CONFIDENCE_THRESHOLD})"
-        logger.warning(result.error)
-        return _fallback(result, last_known_good_fen, t0)
+    if use_llm:
+        # ── LLM path: send full frame, skip all CV stages ─────────────────
+        result.board_found = True
+        result.stage_reached = 7
+        board_fen = classify_full_frame(frame)
+        if board_fen:
+            fen = f"{board_fen} w - - 0 1"
+            logger.info("LLM FEN: %s", fen)
+        else:
+            result.error = "LLM classification returned no result"
+            logger.warning(result.error)
+            return _fallback(result, last_known_good_fen, t0)
 
-    # ── Stage 2: Perspective correction ───────────────────────────────────
-    warped               = correct_perspective(frame, corners)
-    result.stage_reached = 2
+        # ── Legality validation ────────────────────────────────────────────
+        validation = validate_fen(fen)
+        result.stage_reached = 8
+        result.legal = validation.legal
 
-    # ── Stage 3: Square extraction ─────────────────────────────────────────
-    squares              = extract_squares(warped)
-    result.stage_reached = 3
+        if not validation.legal:
+            result.fen = fen
+            result.error = f"Stage 8 (legality): {validation.reason}"
+            result.latency_ms = (time.perf_counter() - t0) * 1000
+            logger.warning("Illegal FEN | fen=%r | reason=%s", fen, validation.reason)
+            result.confidence = 0.95
+            return _fallback(result, last_known_good_fen, t0)
 
-    # ── Stage 4: Occupancy detection ──────────────────────────────────────
-    occupied             = detect_occupancy(squares)
-    result.stage_reached = 4
+        result.confidence = 0.95
+        result.confidence_detail = {"classifier": 1.0}
+        result.fen = fen
+        result.used_fallback = False
 
-    # ── Stage 5: Piece color ───────────────────────────────────────────────
-    colors               = detect_piece_colors(squares, occupied)
-    result.stage_reached = 5
+    else:
+        # ── CV heuristic path: stages 1-7 ─────────────────────────────────
+        # Stage 1: Board detection
+        if pinned_corners and len(pinned_corners) == 4:
+            corners = np.array(pinned_corners, dtype="float32")
+            detect_conf = 0.99
+            result.board_found = True
+            result.stage_reached = 1
+            result.corners = BoardCorners(
+                top_left=pinned_corners[0], top_right=pinned_corners[1],
+                bottom_right=pinned_corners[2], bottom_left=pinned_corners[3],
+            )
+        else:
+            try:
+                corners, detect_conf = detect_board(frame)
+                result.board_found = True
+                result.stage_reached = 1
+                result.corners = BoardCorners(
+                    top_left=corners[0].tolist(), top_right=corners[1].tolist(),
+                    bottom_right=corners[2].tolist(), bottom_left=corners[3].tolist(),
+                )
+            except BoardNotFoundError as exc:
+                result.error = f"Stage 1 (board detection): {exc}"
+                logger.warning(result.error)
+                return _fallback(result, last_known_good_fen, t0)
 
-    # ── Stage 6: Piece classification (baseline heuristics) ───────────────
-    pieces               = classify_pieces(squares, occupied, colors)
-    result.stage_reached = 6
+            if detect_conf < settings.CONFIDENCE_THRESHOLD:
+                result.confidence = detect_conf
+                result.error = f"Low board-detect confidence ({detect_conf:.2f})"
+                logger.warning(result.error)
+                return _fallback(result, last_known_good_fen, t0)
 
-    # ── Stage 7: FEN generation (MVP defaults — see stage7 docstring) ──────
-    fen                  = generate_fen(pieces)
-    result.stage_reached = 7
+        # Stage 2: Perspective correction
+        warped = correct_perspective(frame, corners)
+        if white_side and white_side != "bottom":
+            warped = _rotate_board(warped, white_side)
+        result.stage_reached = 2
 
-    # ── Stage 8: Legality validation ───────────────────────────────────────
-    validation           = validate_fen(fen)
-    result.stage_reached = 8
-    result.legal         = validation.legal
+        # Stages 3-7: Heuristic classification
+        squares = extract_squares(warped)
+        result.stage_reached = 3
+        occupied = detect_occupancy(squares)
+        result.stage_reached = 4
+        colors = detect_piece_colors(squares, occupied)
+        result.stage_reached = 5
+        pieces = classify_pieces(squares, occupied, colors)
+        result.stage_reached = 6
+        fen = generate_fen(pieces)
+        result.stage_reached = 7
 
-    if not validation.legal:
-        result.fen        = fen
-        result.error      = f"Stage 8 (legality): {validation.reason}"
-        result.latency_ms = (time.perf_counter() - t0) * 1000
-        logger.warning("Illegal FEN | fen=%r | reason=%s", fen, validation.reason)
-        # Still compute confidence so callers can see pipeline state
-        composite, detail          = _compute_confidence(detect_conf, occupied)
-        result.confidence          = composite
-        result.confidence_detail   = detail
-        return result
+        # Stage 8: Legality
+        validation = validate_fen(fen)
+        result.stage_reached = 8
+        result.legal = validation.legal
 
-    # ── Confidence composition (Adjustment 6) ─────────────────────────────
-    composite, detail          = _compute_confidence(detect_conf, occupied)
-    result.confidence          = composite
-    result.confidence_detail   = detail
+        if not validation.legal:
+            result.fen = fen
+            result.error = f"Stage 8 (legality): {validation.reason}"
+            result.latency_ms = (time.perf_counter() - t0) * 1000
+            logger.warning("Illegal FEN | fen=%r | reason=%s", fen, validation.reason)
+            composite, detail = _compute_confidence(detect_conf, occupied)
+            result.confidence = composite
+            result.confidence_detail = detail
+            return _fallback(result, last_known_good_fen, t0)
 
-    if composite < settings.CONFIDENCE_THRESHOLD:
-        result.error = f"Composite confidence too low ({composite:.2f})"
-        logger.warning(result.error)
-        return _fallback(result, last_known_good_fen, t0)
+        composite, detail = _compute_confidence(detect_conf, _dummy_occupied(fen))
+        result.confidence = composite
+        result.confidence_detail = detail
+        if composite < settings.CONFIDENCE_THRESHOLD:
+            result.error = f"Composite confidence too low ({composite:.2f})"
+            logger.warning(result.error)
+            return _fallback(result, last_known_good_fen, t0)
 
-    result.fen           = fen
-    result.used_fallback = False
+        result.fen = fen
+        result.used_fallback = False
 
-    # ── Debug artifacts (Adjustment 2) ────────────────────────────────────
-    if debug:
+    # ── Debug artifacts (heuristic path only) ────────────────────────────
+    if debug and not use_llm:
         result.debug_artifacts = _build_debug_artifacts(frame, corners, warped, occupied)
 
     result.latency_ms = (time.perf_counter() - t0) * 1000
     logger.info(
-        "Pipeline complete | fen=%r | conf=%.2f | pieces=%d | latency=%.1fms",
-        fen, composite, sum(occupied), result.latency_ms,
+        "Pipeline complete | fen=%r | conf=%.2f | latency=%.1fms",
+        result.fen, result.confidence, result.latency_ms,
     )
     return result

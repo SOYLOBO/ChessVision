@@ -6,10 +6,13 @@ POST /analyze-frame  Deprecated alias — remove once all callers migrated to /s
 GET  /health
 """
 from __future__ import annotations
+import logging
+import traceback
 from fastapi import APIRouter, HTTPException
 from app.models.vision import AnalyzeFrameRequest, VisionResult
 from app.core.pipeline import run_pipeline
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 health_router = APIRouter()
 
@@ -21,8 +24,11 @@ async def _run(body: AnalyzeFrameRequest) -> VisionResult:
             last_known_good_fen = body.last_known_good_fen,
             previous_fen        = body.previous_fen,
             debug               = body.debug,
+            pinned_corners      = body.pinned_corners,
+            white_side          = body.white_side,
         )
     except Exception as exc:
+        logger.error("Pipeline exception:\n%s", traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

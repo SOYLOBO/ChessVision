@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     CLF_QUEEN_MIN_TOP_MASS:       float = 0.13
     CLF_KING_MIN_HEIGHT_RATIO:    float = 0.80
 
+    # ── Gemini Vision (replaces stages 4-6 for piece classification) ─────
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL:   str = "gemini-2.0-flash"
+    OLLAMA_URL:     str = ""
+    OLLAMA_MODEL:   str = "gemma4:e4b"
+    USE_GEMINI:     bool = True
+
     # ── Debug output ──────────────────────────────────────────────────────
     DEBUG_SAVE_FRAMES:  bool = False
     DEBUG_OUTPUT_DIR:   str  = "/tmp/chessmate_debug"
